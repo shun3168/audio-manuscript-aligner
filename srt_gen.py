@@ -12,7 +12,7 @@ from datetime import timedelta
 # CONFIGURATION: ALIGNMENT & SYNCHRONIZATION THRESHOLDS
 # ==============================================================================
 
-# Minimum confidence required to consume the script. Prevents cascading sync errors.
+# Minimum confidence for script consumption. Prevents cascading alignment errors.
 SCORE_THRESHOLD = 0.5
 
 # ==============================================================================
@@ -21,12 +21,12 @@ SCORE_THRESHOLD = 0.5
 
 def format_srt_time(seconds):
     """
-    PURPOSE: Converts raw float seconds into HH:MM:SS,mmm format.
-    LOGIC: Formats milliseconds with a comma for SRT standard compatibility.
+    PURPOSE: Converts raw float seconds into HH:MM:SS,mmm SRT standard format.
+    LOGIC: Uses timedelta to extract units and formats milliseconds with a comma.
     """
-    td = timedelta(seconds=seconds)
-    total_sec = int(td.total_seconds())
-    msec = int(td.microseconds / 1000)
+    td = timedelta(seconds=seconds) # Convert float seconds to duration object
+    total_sec = int(td.total_seconds()) # Get total elapsed seconds
+    msec = int(td.microseconds / 1000) # Extract millisecond component
     return f"{total_sec//3600:02}:{(total_sec%3600)//60:02}:{total_sec%60:02},{msec:03}"
 
 # ==============================================================================
@@ -36,15 +36,15 @@ def format_srt_time(seconds):
 def get_refined_split_pos(curr_heard, next_heard, script_segment, base_limit, extended_limit, long_wav_sec, dur):
     """
     PURPOSE: Finds the mathematically optimal split index in the script text.
-    LOGIC: Matches trailing audio anchors and leading next-segment anchors against script.
+    LOGIC: Matches trailing audio words and leading next-segment words against script.
     """
-    words_next = next_heard.split()[:2]
-    words_curr = curr_heard.split()[-2:]
+    words_next = next_heard.split()[:2] # Take first 2 words of the next segment
+    words_curr = curr_heard.split()[-2:] # Take last 2 words of the current segment
     t_next = " ".join(words_next)
     t_curr = " ".join(words_curr)
     
     limit = extended_limit if dur >= long_wav_sec else base_limit
-    segment = script_segment[:limit]
+    segment = script_segment[:limit] # Slice script to the search range
     
     best_pos, max_score = 0, -1
     for i in range(len(segment) + 1):
@@ -105,7 +105,7 @@ def run():
         with open(script_in, "r", encoding="utf-8") as f:
             master_script = " ".join(f.read().split())
 
-        # --- STEP 3: VAD (VOICE ACTIVITY DETECTION) ---
+        # --- STEP 3: VAD ---
         print(f"STEP 1: Mapping speech intervals via FFmpeg silencedetect...")
         log_cmd = ["ffmpeg", "-i", current_audio_workfile, "-af", "silencedetect=noise=-30dB:d=0.5", "-f", "null", "-"]
         result = subprocess.run(log_cmd, stderr=subprocess.PIPE, text=True, errors="replace")
@@ -166,7 +166,6 @@ def run():
                     split_idx, match_score = get_refined_split_pos(transcript_curr, transcript_next, remaining_script, 45, 400, 5.5, seg['dur'])
                     
                     # --- RETROACTIVE BACKTRACKING LOGIC ---
-                    # Theoretical implementation to fill previously skipped gaps.
                     t_curr_end = " ".join(transcript_curr.split()[-2:])
                     if match_score >= SCORE_THRESHOLD and t_curr_end:
                         search_limit = 400 if seg['dur'] >= 5.5 else 45
@@ -175,11 +174,13 @@ def run():
                             new_end_pos = found_pos + len(t_curr_end)
                             if new_end_pos > split_idx:
                                 missed_text = remaining_script[split_idx:new_end_pos].strip()
-                                # Patch the previous block in memory and on disk.
                                 if i > 0:
-                                    prev_lines = srt_data[i-1].split('\n')
-                                    prev_lines[2] = (prev_lines[2] + " " + missed_text).strip()
-                                    srt_data[i-1] = "\n".join(prev_lines)
+                                    # [NOTIFY USER] Print backtrack event before modifying memory
+                                    print(f"  └─ BACKTRACK: Patching Segment {i:04d} (+{len(missed_text)} chars)")
+                                    
+                                    prev_parts = srt_data[i-1].split('\n')
+                                    prev_parts[2] = (prev_parts[2] + " " + missed_text).strip()
+                                    srt_data[i-1] = "\n".join(prev_parts)
                                     prev_ts = int(segments[i-1]['start'] * 1000)
                                     with open(os.path.join(output_dir, f"{prev_ts:09d}.txt"), "a", encoding="utf-8") as f:
                                         f.write(" " + missed_text)
@@ -200,7 +201,7 @@ def run():
                 
                 remaining_script = remaining_script[actual_consumed:].strip()
 
-            # --- MONITORING: CONSOLE FEEDBACK (EXACT DESIGN RESTORED) ---
+            # --- MONITORING: CONSOLE FEEDBACK (EXACT ORIGINAL DESIGN) ---
             preview = final_segment_text.replace("\n", " ")
             preview = (preview[:37] + "...") if len(preview) > 40 else preview
             log_msg = f"[{curr_num:04d}/{total_count:04d}] (Score:{match_score:.2f}) "
@@ -216,7 +217,6 @@ def run():
         print(f"\nFINISH:\n- Fragments saved in: {output_dir}/\n- Master Subtitles: {output_srt}")
 
     finally:
-        # --- STEP 6: CLEANUP ---
         if temp_wav_file and os.path.exists(temp_wav_file):
             os.remove(temp_wav_file)
             print("CLEANUP: Process workfile removed.")
