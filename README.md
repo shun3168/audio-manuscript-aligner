@@ -16,6 +16,11 @@ The tool maps existing text content to audio timestamps. It does not generate ne
 * FFmpeg (External executable)
 * Python Libraries: `openai-whisper`, `torch`, `setuptools-rust`
 
+## Language Support
+This tool is language-agnostic and supports any language compatible with OpenAI Whisper.
+* **Automatic Detection**: By default, Whisper automatically identifies the language of the audio.
+* **Universal Matching**: The alignment algorithm uses character-based fuzzy matching, making it effective for Hangul, Kanji, Latin, and other scripts without any special configuration.
+
 ## Usage
 ```bash
 python srt_gen.py <audio_file> <manuscript_file>
@@ -35,3 +40,4 @@ MIT
 This tool utilizes the following external components:
 * [OpenAI Whisper](https://github.com/openai/whisper) (MIT License)
 * [FFmpeg](https://ffmpeg.org/) (LGPL/GPL License)
+
