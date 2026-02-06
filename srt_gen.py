@@ -8,59 +8,80 @@ import tempfile
 from difflib import SequenceMatcher
 from datetime import timedelta
 
-# Threshold for the similarity score (0.0 to 1.0).
-# Alignment is considered reliable if the score is above this value.
+# ==============================================================================
+# CONFIGURATION & CONSTANTS
+# ==============================================================================
+
+# Threshold for similarity score (0.0 to 1.0).
+# If the average match of the left and right anchors is below this, 
+# we consider the alignment unreliable for tail-correction.
 SCORE_THRESHOLD = 0.5
+
+# ==============================================================================
+# UTILITY FUNCTIONS
+# ==============================================================================
 
 def format_srt_time(seconds):
     """
-    Converts raw seconds (float) into the standard SRT subtitle timestamp format.
-    Format: HH:MM:SS,mmm (e.g., 00:01:02,500)
+    PURPOSE: Converts a raw float (seconds) into the industry-standard SRT time string.
+    LOGIC: Uses Python's timedelta to extract hours, minutes, and seconds,
+           then manually calculates milliseconds for the ,mmm suffix.
     """
     td = timedelta(seconds=seconds)
     total_sec = int(td.total_seconds())
     msec = int(td.microseconds / 1000)
+    # Output Format: HH:MM:SS,mmm (e.g., 00:05:22,450)
     return f"{total_sec//3600:02}:{(total_sec%3600)//60:02}:{total_sec%60:02},{msec:03}"
 
 def get_refined_split_pos(curr_heard, next_heard, script_segment, base_limit, extended_limit, long_wav_sec, dur):
     """
-    Core Alignment Algorithm: Sliding Window Anchor Matching.
+    ALGORITHM: Sliding Window Phonetic Alignment.
     
-    This function finds the best 'cut point' in the master script by comparing
-    Whisper's transcribed text with the original script text.
-    
-    1. It identifies 'anchors': the end of the current clip and the start of the next.
-    2. It slides through the script and calculates a similarity ratio at every possible character index.
-    3. The position with the highest average similarity for both anchors is returned.
+    PURPOSE: To find the exact character index in the script where one audio clip 
+             ends and the next begins.
+             
+    LOGIC:
+    1. Defines two 'anchors': 
+       - Left Anchor: The last 2 words Whisper heard in the current segment.
+       - Right Anchor: The first 2 words Whisper heard in the next segment.
+    2. Slides through the script character-by-character.
+    3. At each index 'i', it calculates the SequenceMatcher ratio for both anchors.
+    4. Returns the index 'i' that yields the highest average similarity score.
     """
-    # Use the last 2 words of current clip and first 2 words of next clip as anchors
+    # Extract anchors from transcribed text
     words_next = next_heard.split()[:2]
     words_curr = curr_heard.split()[-2:]
     t_next = " ".join(words_next)
     t_curr = " ".join(words_curr)
     
-    # Adjust search range based on audio duration to prevent out-of-sync drifting
+    # Range is dynamically adjusted. Longer audio needs a larger 'look-ahead' 
+    # in the script to find its end point.
     limit = extended_limit if dur >= long_wav_sec else base_limit
     segment = script_segment[:limit]
     
     best_pos, max_score = 0, -1
     
-    # Iterate through every character in the search segment to find the optimal split
+    # Brute-force search for the best split point within the segment
     for i in range(len(segment) + 1):
-        # Calculate similarity for the 'left' side (current segment end)
+        # s_left matches the text leading up to 'i'
         s_left = SequenceMatcher(None, t_curr, segment[max(0, i-len(t_curr)):i].strip()).ratio() if t_curr else 0
-        # Calculate similarity for the 'right' side (next segment start)
+        # s_right matches the text starting from 'i'
         s_right = SequenceMatcher(None, t_next, segment[i:i+len(t_next)].strip()).ratio() if t_next else 0
         
-        # Combined score: 1.0 means perfect alignment with both anchors
+        # Combined arithmetic mean of anchor scores
         score = (s_left + s_right) / 2
         if score > max_score:
             max_score, best_pos = score, i
             
     return best_pos, max_score
 
+# ==============================================================================
+# MAIN EXECUTION ENGINE
+# ==============================================================================
+
 def run():
-    # --- Phase 1: Environment & Argument Validation ---
+    # --- STEP 1: CLI ARGUMENT VALIDATION ---
+    # Ensures the user provided the necessary input files.
     if len(sys.argv) < 3:
         print("USAGE: python srt_gen.py <audio_file> <script_file>")
         sys.exit(1)
@@ -68,12 +89,12 @@ def run():
     audio_in = sys.argv[1]
     script_arg = sys.argv[2]
 
-    # Check if the source audio exists
+    # File existence check to prevent early crashes
     if not os.path.exists(audio_in):
         print(f"ERROR: Audio file '{audio_in}' not found.")
         sys.exit(1)
 
-    # Resolve script path (allows user to omit '.txt' in command line)
+    # Resolution logic: If 'myscript' is passed, try to find 'myscript.txt'
     script_in = script_arg
     if not os.path.exists(script_in):
         if os.path.exists(script_arg + ".txt"):
@@ -82,95 +103,109 @@ def run():
             print(f"ERROR: Script '{script_arg}' not found.")
             sys.exit(1)
 
-    # Initialize naming conventions for output files and directories
+    # Output paths configuration
     audio_name = os.path.splitext(os.path.basename(audio_in))[0]
     script_name = os.path.splitext(os.path.basename(script_in))[0]
-    output_dir = script_name
-    output_srt = audio_name + ".srt"
+    output_dir = script_name # Directory for individual .txt fragments
+    output_srt = audio_name + ".srt" # Final subtitle file
 
-    # --- Phase 2: Audio Normalization (FFmpeg) ---
-    # Whisper works most accurately with 16kHz mono WAV files.
-    # We create a temporary high-compatibility file if the input is in another format.
+    # --- STEP 2: AUDIO NORMALIZATION (FFMPEG) ---
+    # Whisper AI is optimized for 16kHz Mono. Silence detection also requires 
+    # consistent audio specs to work reliably across different source formats.
     current_audio_workfile = audio_in
     temp_wav_file = None
     if not audio_in.lower().endswith(".wav"):
-        print(f"NOTICE: Converting input to 16kHz mono WAV for optimal AI processing...")
+        print(f"NOTICE: Creating normalized 16kHz Mono WAV workfile...")
         fd, temp_wav_file = tempfile.mkstemp(suffix=".wav")
-        os.close(fd) # Close file descriptor; subprocess will handle the file path
+        os.close(fd) 
+        # Standardize: -ac 1 (Mono), -ar 16000 (16kHz)
         conv_cmd = ["ffmpeg", "-y", "-i", audio_in, "-ac", "1", "-ar", "16000", temp_wav_file]
         subprocess.run(conv_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         current_audio_workfile = temp_wav_file
 
     try:
-        # Create storage for individual text fragments (useful for manual correction)
+        # Create output directory for caching results
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        # Read the master script and normalize all whitespace/newlines into single spaces
+        # CRITICAL DESIGN CHOICE: SCRIPT NORMALIZATION
+        # To ensure perfect find() operations, we convert the entire script into 
+        # a single string where every newline or multiple space is EXACTLY one space.
+        # This is the "Master Truth" for all character index calculations.
         with open(script_in, "r", encoding="utf-8") as f:
             master_script = " ".join(f.read().split())
 
-        # --- Phase 3: Speech Segmentation via Silence Detection ---
+        # --- STEP 3: SILENCE-BASED AUDIO SEGMENTATION ---
         print(f"STEP 1: Analyzing audio for speech intervals...")
-        # We detect silence to find gaps between sentences. -30dB is the noise floor.
+        # FFmpeg silencedetect detects gaps. We use a -30dB threshold.
         log_cmd = ["ffmpeg", "-i", current_audio_workfile, "-af", "silencedetect=noise=-30dB:d=0.5", "-f", "null", "-"]
-        
-        # CROSS-OS COMPATIBILITY: We use errors="replace" for the stderr stream.
-        # This prevents crashes if FFmpeg outputs non-UTF8 characters in Windows environments.
+        # errors="replace" prevents Windows-specific encoding crashes during log parsing.
         result = subprocess.run(log_cmd, stderr=subprocess.PIPE, text=True, errors="replace")
         
-        # Regex to extract timestamps where silence starts and ends
+        # Regex extraction of timestamps
         silence_starts = re.findall(r"silence_start: ([\d\.]+)", result.stderr)
         silence_ends = re.findall(r"silence_end: ([\d\.]+)", result.stderr)
 
-        # Build a list of active speech segments (the parts between silences)
+        # Create segment metadata (start, end, duration)
         segments = []
         for i in range(len(silence_ends)):
             start = float(silence_ends[i])
-            # Set end point to next silence start, or +5s if it's the final segment
+            # If no next silence, assume the segment lasts 5 seconds or until EOF
             end = float(silence_starts[i+1]) if i + 1 < len(silence_starts) else start + 5.0
-            if end - start > 0.1: # Ignore micro-segments or noise
+            if end - start > 0.1: # Discard noise artifacts
                 segments.append({"start": start, "end": end, "dur": end - start})
 
-        print(f"Total speech segments detected: {len(segments)}")
+        total_count = len(segments)
+        print(f"Total speech segments detected: {total_count}")
         
         ai_model = None
         remaining_script = master_script
         srt_data = []
 
-        # --- Phase 4: Main Transcription & Alignment Loop ---
+        # --- STEP 4: TRANSCRIPTION & SCRIPT ALIGNMENT LOOP ---
         for i, seg in enumerate(segments):
+            curr_num = i + 1
             timestamp_ms = int(seg['start'] * 1000)
-            txt_file_path = os.path.join(output_dir, f"{timestamp_ms:09d}.txt")
+            txt_filename = f"{timestamp_ms:09d}.txt"
+            txt_file_path = os.path.join(output_dir, txt_filename)
             
             final_segment_text = ""
-            # RESUME FEATURE: If a text fragment already exists, skip AI processing to save time
+            match_score = 1.0 # Default score for resume/final
+
+            # RESUME FEATURE: Perfect synchronization with previous runs.
             if os.path.exists(txt_file_path):
                 with open(txt_file_path, "r", encoding="utf-8") as f:
-                    final_segment_text = f.read().strip()
-                print(f"[{i+1:03d}] SKIP: {os.path.basename(txt_file_path)} (Found cached fragment)")
-                # Move script pointer forward
+                    # We read the file content as-is.
+                    final_segment_text = f.read()
+                
+                # SEARCH LOGIC: Because we save normalized raw slices, 
+                # find() will perform a 100% binary-accurate search in master_script.
                 find_idx = remaining_script.find(final_segment_text)
+                
                 if find_idx != -1: 
+                    # Advance the script pointer by the exact length of the found fragment.
                     remaining_script = remaining_script[find_idx + len(final_segment_text):].strip()
+                else:
+                    # Error indicates that either the master script or the fragment was modified.
+                    print(f"ERROR: Synchronization lost at segment {curr_num}!")
             else:
-                # Load Whisper AI model on-demand (lazy loading)
+                # LAZY LOAD: Initialize the AI model only when a new segment needs processing.
                 if ai_model is None:
-                    print("STEP 2: Loading OpenAI Whisper model (Turbo)...")
+                    print("STEP 2: Initializing OpenAI Whisper AI (Turbo)...")
                     ai_model = whisper.load_model("turbo")
 
-                # STABILITY FIX: Extract segment to a physical temp file.
-                # Whisper's transcribe() often fails with raw ByteIO streams on certain OSs.
+                # EXTRACTION: Write the specific audio segment to a temporary WAV.
+                # This ensures the AI receives a clean, single-segment file.
                 fd1, tmp_curr = tempfile.mkstemp(suffix=".wav")
                 os.close(fd1)
                 subprocess.run(["ffmpeg", "-y", "-ss", str(seg['start']), "-t", str(seg['dur']), "-i", current_audio_workfile, "-ar", "16000", "-ac", "1", tmp_curr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
-                # Perform AI speech-to-text on the current chunk
+                # WHISPER TRANSCRIPTION: AI hears the audio and converts it to text.
                 transcript_curr = ai_model.transcribe(tmp_curr)["text"].strip()
-                os.remove(tmp_curr) # Cleanup audio chunk immediately to free disk space
+                os.remove(tmp_curr) 
 
-                # ALIGNMENT LOGIC: Compare current segment with the next one to find the boundary
-                if i + 1 < len(segments):
+                # ALIGNMENT: Calculate where the text ends by looking at the next segment.
+                if curr_num < total_count:
                     next_seg = segments[i+1]
                     fd2, tmp_next = tempfile.mkstemp(suffix=".wav")
                     os.close(fd2)
@@ -179,62 +214,68 @@ def run():
                     transcript_next = ai_model.transcribe(tmp_next)["text"].strip()
                     os.remove(tmp_next) 
                     
-                    # Phase A: Get base split position using the anchor similarity algorithm
+                    # PHASE A: Basic Sliding Window Alignment.
                     split_idx, match_score = get_refined_split_pos(transcript_curr, transcript_next, remaining_script, 45, 400, 5.5, seg['dur'])
                     
-                    # Phase B (Ported from origtxt.py): Tail-Anchor Correction.
-                    # This independently verifies if the Whisper-detected ending words are in the text.
-                    # If they are missing due to a low similarity score, we force an extension.
-                    initial_text = remaining_script[:split_idx].strip()
-                    t_curr_end = " ".join(transcript_curr.split()[-2:]) # Last 2 words from Whisper
+                    # PHASE B: TAIL-ANCHOR CORRECTION (The "origtxt" logic).
+                    # Purpose: Whisper often detects words that might be slightly beyond the 
+                    # mathematical cut point. This forces the cut point to extend until 
+                    # it covers the actual words Whisper heard.
+                    initial_slice = remaining_script[:split_idx].strip()
+                    t_curr_end = " ".join(transcript_curr.split()[-2:]) 
                     
                     if match_score >= SCORE_THRESHOLD and t_curr_end:
-                        # If the script cut doesn't contain the words Whisper actually heard:
-                        if t_curr_end not in initial_text:
-                            # Search for these words slightly deeper in the script
+                        # If the expected tail words are not in the current slice:
+                        if t_curr_end not in initial_slice:
+                            # Search slightly ahead in the master script for the tail words.
                             search_limit = 400 if seg['dur'] >= 5.5 else 45
                             found_pos = remaining_script[:search_limit].rfind(t_curr_end)
                             if found_pos != -1:
                                 new_end_pos = found_pos + len(t_curr_end)
-                                # Only adjust if it actually increases the text length
+                                # Only update if the correction actually moves the pointer forward.
                                 if new_end_pos > split_idx:
                                     split_idx = new_end_pos 
                 else:
-                    # Final segment: absorb all remaining script text
+                    # FINAL SEGMENT: Absorb all remaining text in the master script.
                     split_idx = len(remaining_script)
                     match_score = 1.0
 
-                # Finalize the fragment and save to disk
+                # PERSISTENCE LOGIC: "Perfect Sync" Extraction.
+                # We slice the EXACT normalized text from the master_script.
                 final_segment_text = remaining_script[:split_idx].strip()
-                with open(txt_file_path, "w", encoding="utf-8") as f:
+                
+                # BINARY PRESERVATION: We save without extra formatting or newlines.
+                # newline='' is essential to prevent OS-level translation of \n.
+                with open(txt_file_path, "w", encoding="utf-8", newline='') as f:
                     f.write(final_segment_text)
                 
-                # Consume the master script by moving the pointer
+                # Update the master pointer for the next iteration.
                 remaining_script = remaining_script[split_idx:].strip()
 
-                # Visual Progress Logging for the user
-                preview = final_segment_text.replace("\n", " ")
-                preview = (preview[:37] + "...") if len(preview) > 40 else preview
-                print(f"[{i+1:03d}] SAVED: {os.path.basename(txt_file_path)} -> \"{preview}\" (Score: {match_score:.2f})")
+            # --- PROGRESS VISUALIZATION ---
+            # We replace newlines for the terminal preview only.
+            preview = final_segment_text.replace("\n", " ")
+            preview = (preview[:37] + "...") if len(preview) > 40 else preview
+            print(f"[{curr_num:04d}/{total_count:04d}] (Score: {match_score:.2f}) {txt_filename} -> {preview}")
 
-            # Append the result to the SRT data list
+            # Append to internal list for final SRT assembly.
             start_time_srt = format_srt_time(seg['start'])
             end_time_srt = format_srt_time(seg['end'])
-            srt_data.append(f"{i+1}\n{start_time_srt} --> {end_time_srt}\n{final_segment_text}\n")
+            srt_data.append(f"{curr_num}\n{start_time_srt} --> {end_time_srt}\n{final_segment_text}\n")
 
-        # --- Phase 5: Final Export & Cleanup ---
+        # --- STEP 5: FINAL SRT ASSEMBLY & CLEANUP ---
         with open(output_srt, "w", encoding="utf-8") as f:
             f.write("\n".join(srt_data))
-        print(f"\nFINISH:\n- Script fragments saved in: {output_dir}/\n- Final Subtitle file created: {output_srt}")
+        print(f"\nFINISH:\n- All text fragments saved in: {output_dir}/\n- Master Subtitles created: {output_srt}")
 
     finally:
-        # Crucial Cleanup: Delete the master temporary WAV file even if an error occurs
+        # Crucial: Always remove the temporary normalized audio file.
         if temp_wav_file and os.path.exists(temp_wav_file):
             os.remove(temp_wav_file)
-            print("CLEANUP: Process workfile deleted.")
+            print("CLEANUP: Process workfile removed.")
 
 if __name__ == "__main__":
-    # Execute with keyboard interrupt protection
+    # Provides KeyboardInterrupt (Ctrl+C) handling for clean exits.
     try:
         run()
     except KeyboardInterrupt:
