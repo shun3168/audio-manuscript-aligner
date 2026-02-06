@@ -49,14 +49,12 @@ def get_refined_split_pos(curr_heard, next_heard, script_segment, dur):
     return best_pos, max_score
 
 def run():
-    # --- STARTUP FEEDBACK ---
-    # Displayed immediately so the user knows the AI is loading.
-    print("Initializing Whisper...")
-
     if len(sys.argv) < 3:
         print("USAGE: python srt_gen.py <audio_file> <script_file>")
         sys.exit(1)
 
+    print("Initializing Whisper...")
+    
     audio_in, script_arg = sys.argv[1], sys.argv[2]
     script_in = script_arg if os.path.exists(script_arg) else script_arg + ".txt"
     output_dir = os.path.splitext(os.path.basename(script_in))[0]
@@ -197,3 +195,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
