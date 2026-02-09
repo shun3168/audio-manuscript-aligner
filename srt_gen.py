@@ -2,8 +2,8 @@ import os, subprocess, re, whisper, sys, tempfile, glob
 from difflib import SequenceMatcher
 from datetime import timedelta
 
-SCORE_THRESHOLD = 0.5
-RECOVERY_THRESHOLD = 0.7
+SCORE_THRESHOLD = 0.3
+RECOVERY_THRESHOLD = 0.9
 
 total_files = 0
 
@@ -21,24 +21,21 @@ def clean_text_fully(text):
     return text.strip()
 
 def build_srt_from_txt_folder(output_dir, output_srt):
-    srt_final = []
     txt_files = sorted(glob.glob(os.path.join(output_dir, "*.txt")))
-
-    for idx, filepath in enumerate(txt_files):
-        filename = os.path.basename(filepath)
-        name_part = os.path.splitext(filename)[0]
-        
-        time_line = name_part.replace("_", " --> ").replace(".", ",")
-        
+    srt_final = []
+    idx = 1
+    for filepath in txt_files:
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read().strip()
-
-        srt_block = f"{idx + 1}\n{time_line}\n{content}\n"
-        srt_final.append(srt_block)
+        if not content:
+            continue
+        time_line = os.path.splitext(os.path.basename(filepath))[0].replace("_", " --> ").replace(".", ",")
+        srt_final.append(f"{idx}\n{time_line}\n{content}")
+        idx += 1
 
     if srt_final:
         with open(output_srt, "w", encoding="utf-8") as f:
-            f.write("\n".join(srt_final))
+            f.write("\n\n".join(srt_final) + "\n")
 
 def get_weighted_limit(dur, search_window):
     budget = dur * 30
@@ -279,6 +276,21 @@ def run():
     current_audio, master_script, segments, temp_wav = prepare_resources(audio_in, script_in)
 
     print("Initializing...(2/3)")
+
+    if os.path.exists(output_dir):
+        existing_files = os.listdir(output_dir)
+        if existing_files:
+            ans = input(f"Directory '{output_dir}' is not empty. Clear ALL files inside? (y/n): ").lower()
+            if ans == 'y':
+                print("Clearing all files...")
+                for f in existing_files:
+                    f_path = os.path.join(output_dir, f)
+                    if os.path.isfile(f_path):
+                        os.remove(f_path)
+            else:
+                print("Continuing with existing files...")
+    else:
+        os.makedirs(output_dir)
 
     try:
         if not os.path.exists(output_dir): 
