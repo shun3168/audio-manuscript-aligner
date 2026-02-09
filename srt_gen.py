@@ -9,7 +9,6 @@ total_files = 0
 
 def build_srt_from_txt_folder(output_dir, output_srt):
     def get_ms(filepath):
-        # ファイル名(15.416_17.515.txt)から最初の「15.416」を確実に抜く
         filename = os.path.basename(filepath)
         match = re.search(r'(\d+\.\d+)', filename)
         if match:
@@ -352,3 +351,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
