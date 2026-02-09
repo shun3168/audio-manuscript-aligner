@@ -7,31 +7,27 @@ RECOVERY_THRESHOLD = 0.9
 
 total_files = 0
 
-def format_srt_time(seconds):
-    td = timedelta(seconds=seconds)
-    total_sec = int(td.total_seconds())
-    msec = int(td.microseconds / 1000)
-    return f"{total_sec//3600:02}:{(total_sec%3600)//60:02}:{total_sec%60:02},{msec:03}"
-
-def clean_text_fully(text):
-    text = text.lower()
-    text = re.sub(r'[「」『』、。！？!?,.，．…：；:;（）【】［］\(\)\[\]★◆▲●○◎♪■□#&%ー\-\'\"‘’“”]', ' ', text)
-    text = re.sub(r'[\r\n\t　]+', ' ', text)
-    text = re.sub(r' +', ' ', text)
-    return text.strip()
-
 def build_srt_from_txt_folder(output_dir, output_srt):
-    txt_files = sorted(glob.glob(os.path.join(output_dir, "*.txt")))
+    def get_ms(filepath):
+        # ファイル名(15.416_17.515.txt)から最初の「15.416」を確実に抜く
+        filename = os.path.basename(filepath)
+        match = re.search(r'(\d+\.\d+)', filename)
+        if match:
+            return int(float(match.group(1)) * 1000)
+        return 0
+
+    txt_files = sorted(glob.glob(os.path.join(output_dir, "*.txt")), key=get_ms)
+    
     srt_final = []
-    idx = 1
-    for filepath in txt_files:
+    for idx, filepath in enumerate(txt_files, 1):
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read().strip()
         if not content:
             continue
-        time_line = os.path.splitext(os.path.basename(filepath))[0].replace("_", " --> ").replace(".", ",")
+            
+        file_base = os.path.splitext(os.path.basename(filepath))[0]
+        time_line = file_base.replace("_", " --> ").replace(".", ",")
         srt_final.append(f"{idx}\n{time_line}\n{content}")
-        idx += 1
 
     if srt_final:
         with open(output_srt, "w", encoding="utf-8") as f:
