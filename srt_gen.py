@@ -5,8 +5,7 @@ from datetime import timedelta
 SCORE_THRESHOLD = 0.5
 RECOVERY_THRESHOLD = 0.7
 
-total_expected_files = 0
-current_file_idx = 0
+total_files = 0
 
 def format_srt_time(seconds):
     td = timedelta(seconds=seconds)
@@ -80,7 +79,7 @@ def get_refined_split_pos(anchor_curr, anchor_next, script_segment, dur, is_reco
             if s_right >= RECOVERY_THRESHOLD:
                 return char_idx, s_right
 
-        return len(script_segment), 1.0
+        return 0, 0.0
 
     
     limit = get_weighted_limit(dur, script_segment)
@@ -114,7 +113,7 @@ def get_refined_split_pos(anchor_curr, anchor_next, script_segment, dur, is_reco
             if s_right >= RECOVERY_THRESHOLD:
                 return char_idx, s_right
         else:
-            score = (s_left * len(anchor_curr) + s_right * len(anchor_next)) / (len(anchor_curr) + len(anchor_next))
+            score = (s_left + s_right) / 2
             if score > max_score:
                 max_score, best_pos = score, char_idx
 
@@ -184,8 +183,8 @@ def prepare_resources(audio_in, script_in):
 
         segments.append({"start": start, "end": end})
 
-    global total_expected_files
-    total_expected_files = len(segments)
+    global total_files
+    total_files = len(segments)
 
     return current_audio_workfile, master_script, segments, temp_wav_file
 
@@ -213,35 +212,31 @@ import glob
 
 def process_segment_helper(i, segments, master_script, output_dir, 
                            last_boundary_pos, skip_count, last_success_info, anchor_curr, anchor_next):
-    global total_expected_files, current_file_idx
+    global total_files
     
     seg = segments[i]
     s_t, e_t = seg['start'], seg['end']
 
-    if skip_count == 3:
+    if skip_count >= 1:
         rel_split, score = get_refined_split_pos(
             anchor_curr, anchor_next, master_script[last_boundary_pos:], (e_t - last_success_info['start_time']), 
             is_recovery=True
         )
+        if score == 0.0:
+            print(f"[{i}/{total_files}] Recovery Failed")
+            return skip_count + 1, last_boundary_pos
         current_text = master_script[last_boundary_pos : last_boundary_pos + rel_split]
-        current_filename = f"{segments[i-2]['start']:.3f}_{e_t:.3f}.txt"
+        current_filename = f"{segments[i-skip_count+1]['start']:.3f}_{e_t:.3f}.txt"
         with open(os.path.join(output_dir, current_filename), "w", encoding="utf-8") as f:
             f.write(current_text)
-        current_file_idx += 1
         skip_count = 0
-        print(f"[{current_file_idx}/{total_expected_files}] (Recovered) {current_text}")
+        print(f"[{i}/{total_files}] (Score:{score:.2f}) {current_text}")
 
-    if len(anchor_next) == 0:
-        total_expected_files -= 1
-        timestamp = format_srt_time(s_t).replace(',', '.')
-        print(f"SKIP (NO VOICE) {timestamp}")
-        return skip_count + 1, last_boundary_pos
+        last_success_info['start_pos'] = last_boundary_pos
+        last_success_info['start_time'] = segments[i]['start']
+        last_boundary_pos += rel_split
 
-    if skip_count > 0:
-        rel_split, score = get_refined_split_pos(
-            anchor_curr, anchor_next, master_script[last_success_info['start_pos']:], 
-            (e_t - last_success_info['start_time']) 
-        )
+        return 0, last_boundary_pos
 
     else:
         rel_split, score = get_refined_split_pos(
@@ -249,35 +244,19 @@ def process_segment_helper(i, segments, master_script, output_dir,
         )
 
     if score < SCORE_THRESHOLD:
-        total_expected_files -= 1
         timestamp = format_srt_time(s_t).replace(',', '.')
-        print(f"SKIP (Score:{score:.2f}) {timestamp}")
+        print(f"[{i}/{total_files}] (Score:{score:.2f}) SKIP {timestamp}")
         return skip_count + 1, last_boundary_pos
 
-    if skip_count > 0:
-        pattern = os.path.join(output_dir, f"{last_success_info['start_time']:.3f}_*.txt")
-        for old_file in glob.glob(pattern):
-            try:
-                os.remove(old_file)
-            except OSError:
-                pass
-        current_text = master_script[last_success_info['start_pos'] : last_success_info['start_pos'] + rel_split]
-        current_filename = f"{last_success_info['start_time']:.3f}_{e_t:.3f}.txt"
-        with open(os.path.join(output_dir, current_filename), "w", encoding="utf-8") as f:
-            f.write(current_text)
-        print(f"[{current_file_idx}/{total_expected_files}] (Corrected) {current_text}")
+    current_text = master_script[last_boundary_pos : last_boundary_pos + rel_split]
+    current_filename = f"{s_t:.3f}_{e_t:.3f}.txt"
+    with open(os.path.join(output_dir, current_filename), "w", encoding="utf-8") as f:
+        f.write(current_text)
+    print(f"[{i}/{total_files}] (Score:{score:.2f}) {current_text}")
 
-    else:
-        current_text = master_script[last_boundary_pos : last_boundary_pos + rel_split]
-        current_filename = f"{s_t:.3f}_{e_t:.3f}.txt"
-        with open(os.path.join(output_dir, current_filename), "w", encoding="utf-8") as f:
-            f.write(current_text)
-        current_file_idx += 1
-        print(f"[{current_file_idx}/{total_expected_files}] (Score:{score:.2f}) {current_text}")
-
-    last_boundary_pos += rel_split
     last_success_info['start_pos'] = last_boundary_pos
-    last_success_info['start_time'] = segments[i+1]['start']
+    last_success_info['start_time'] = segments[i]['start']
+    last_boundary_pos += rel_split
 
     return 0, last_boundary_pos
 
@@ -327,14 +306,27 @@ def run():
                 final_text = master_script[last_boundary_pos:]
                 save_path = os.path.join(output_dir, f"{s_t:.3f}_{e_t:.3f}.txt")
                 with open(save_path, "w", encoding="utf-8") as f: f.write(final_text)
-                print(f"[{i+1:0{digit_width}d}] (Last) Written")
+                print(f"[{i}/{total_files}] (LAST) {final_text}")
                 break
+
+            if len(clean_text_fully(raw_next)) == 0:
+                raw_curr = raw_next
+                raw_next = get_trans(segments[i+1], current_audio, ai_model)
+                anchor_curr = clean_text_fully(raw_curr).split()[-3:]
+                anchor_next = clean_text_fully(raw_next).split()[:3]
+
+                timestamp = format_srt_time(s_t).replace(',', '.')
+                print(f"[{i}/{total_files}] (Silence) SKIP {timestamp}")
+                for j in range(i, i - skip_count, -1):
+                    segments[j] = segments[j-1]
+                i += 1  
+                continue
 
             if skip_count == 0:
                 raw_curr = raw_next
             raw_next = get_trans(segments[i+1], current_audio, ai_model)
-            anchor_curr = clean_text_fully(raw_curr).split()[-5:]
-            anchor_next = clean_text_fully(raw_next).split()[:5]
+            anchor_curr = clean_text_fully(raw_curr).split()[-3:]
+            anchor_next = clean_text_fully(raw_next).split()[:3]
 
             skip_count, last_boundary_pos = process_segment_helper(
                 i, segments, master_script, 
@@ -345,7 +337,6 @@ def run():
             i += 1
 
         build_srt_from_txt_folder(output_dir, output_srt)
-        print("Completed!")
 
     finally:
         if temp_wav and os.path.exists(temp_wav):
