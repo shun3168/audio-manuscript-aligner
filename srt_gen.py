@@ -7,13 +7,23 @@ RECOVERY_THRESHOLD = 0.9
 
 total_files = 0
 
+import glob
+import os
+import re
+
+def format_srt_time(seconds_str):
+    total_seconds = float(seconds_str)
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    seconds = int(total_seconds % 60)
+    milliseconds = int(round((total_seconds - int(total_seconds)) * 1000))
+    
+    return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
+
 def build_srt_from_txt_folder(output_dir, output_srt):
     def get_ms(filepath):
-        filename = os.path.basename(filepath)
-        match = re.search(r'(\d+\.\d+)', filename)
-        if match:
-            return int(float(match.group(1)) * 1000)
-        return 0
+        match = re.search(r'(\d+\.\d+|\d+)', os.path.basename(filepath))
+        return int(float(match.group(1)) * 1000) if match else 0
 
     txt_files = sorted(glob.glob(os.path.join(output_dir, "*.txt")), key=get_ms)
     
@@ -24,14 +34,19 @@ def build_srt_from_txt_folder(output_dir, output_srt):
         if not content:
             continue
             
-        file_base = os.path.splitext(os.path.basename(filepath))[0]
-        time_line = file_base.replace("_", " --> ").replace(".", ",")
-        srt_final.append(f"{idx}\n{time_line}\n{content}")
+        times = re.findall(r'(\d+\.\d+|\d+)', os.path.basename(filepath))
+        
+        if len(times) >= 2:
+            start_time = format_srt_time(times[0])
+            end_time = format_srt_time(times[1])
+            time_line = f"{start_time} --> {end_time}"
+            
+            srt_final.append(f"{idx}\n{time_line}\n{content}")
 
     if srt_final:
         with open(output_srt, "w", encoding="utf-8") as f:
             f.write("\n\n".join(srt_final) + "\n")
-
+        print(f"SRT完成: {output_srt}")
 def get_weighted_limit(dur, search_window):
     budget = dur * 30
     accumulated_cost = 0
@@ -351,4 +366,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
