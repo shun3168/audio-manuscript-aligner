@@ -217,12 +217,6 @@ def process_segment_helper(i, segments, master_script, output_dir,
     
     seg = segments[i]
     s_t, e_t = seg['start'], seg['end']
-    
-    if len(anchor_next) == 0:
-        total_expected_files -= 1
-        digit_width = len(str(len(segments)))
-        print(f"[{i+1:0{digit_width}d}] SKIP (Total: {skip_count + 1}) Silent")
-        return skip_count + 1, last_boundary_pos
 
     if skip_count == 3:
         rel_split, score = get_refined_split_pos(
@@ -237,6 +231,11 @@ def process_segment_helper(i, segments, master_script, output_dir,
         skip_count = 0
         print(f"[{current_file_idx}/{total_expected_files}] (Recovered) {current_text}")
 
+    if len(anchor_next) == 0:
+        total_expected_files -= 1
+        timestamp = format_srt_time(s_t).replace(',', '.')
+        print(f"SKIP (NO VOICE) {timestamp}")
+        return skip_count + 1, last_boundary_pos
 
     if skip_count > 0:
         rel_split, score = get_refined_split_pos(
@@ -251,8 +250,8 @@ def process_segment_helper(i, segments, master_script, output_dir,
 
     if score < SCORE_THRESHOLD:
         total_expected_files -= 1
-        digit_width = len(str(len(segments)))
-        print(f"[{i+1:0{digit_width}d}] SKIP (Total: {skip_count + 1}) Score: {score:.2f}")
+        timestamp = format_srt_time(s_t).replace(',', '.')
+        print(f"SKIP (Score:{score:.2f}) {timestamp}")
         return skip_count + 1, last_boundary_pos
 
     if skip_count > 0:
