@@ -68,6 +68,21 @@ def get_weighted_limit(dur, search_window):
 
     return max(char_count, 20)
 
+def clean_text_fully(text):
+    """
+    Normalizes text for both Whisper output and the master script.
+    - Replaces all punctuation and symbols with a single space.
+    - Converts newlines, tabs, and full-width spaces into single spaces.
+    - Collapses multiple consecutive spaces into one.
+    """
+    # Replace various symbols/punctuation with a space
+    text = re.sub(r'[「」『』、。！？!?,.，．…：；:;（）【】［］\(\)\[\]★◆▲●○◎♪■□#&%ー\-\'\"‘’“”]', ' ', text)
+    # Convert all whitespace characters to a single space
+    text = re.sub(r'[\r\n\t　]+', ' ', text)
+    # Ensure there's only a single space between words
+    text = re.sub(r' +', ' ', text)
+    return text.strip()
+
 def get_refined_split_pos(anchor_curr, anchor_next, script_segment, dur, is_recovery=False):
     if is_recovery:
         word_positions = [m.start() for m in re.finditer(r'\S+', script_segment)]
@@ -366,6 +381,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
