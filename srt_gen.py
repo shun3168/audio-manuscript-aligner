@@ -46,7 +46,7 @@ def build_srt_from_txt_folder(output_dir, output_srt):
     if srt_final:
         with open(output_srt, "w", encoding="utf-8") as f:
             f.write("\n\n".join(srt_final) + "\n")
-        print(f"SRT完成: {output_srt}")
+        print(f"SRT FILE: {output_srt}")
 def get_weighted_limit(dur, search_window):
     budget = dur * 30
     accumulated_cost = 0
@@ -366,5 +366,6 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
